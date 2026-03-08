@@ -10,15 +10,16 @@ app.use((req, res, next) => {
 });
 
 const MIRRORS = [
-  'https://hd.lordfilm-tre.ru',
   'https://nc.lordfilm133.ru',
+  'https://hd.lordfilm-tre.ru',
   'https://lordfilm.rs',
 ];
 
 const PLAYER_DOMAINS = [
   'variyt.ws', 'kodik', 'alloha', 'videoframe',
   'sibnet', 'collaps', 'cdnmovies', 'bazon', 'hdvb',
-  'videoseed', 'voidboost', 'streamguard', 'kinescope'
+  'videoseed', 'voidboost', 'streamguard', 'kinescope',
+  'iframe.video', 'plague', 'ashdi', 'tortuga'
 ];
 
 function isPlayer(url) {
@@ -70,17 +71,40 @@ async function findIframe(name, year) {
         );
         await page.waitForTimeout(1500);
 
-        // Кликаем первый результат
-        const selectors = ['.th-item a', '.short a', '.film-item a', '.th a', 'h2 a'];
+        // Логируем что нашли на странице поиска (для отладки)
+        const pageInfo = await page.evaluate(() => ({
+          title: document.title,
+          links: Array.from(document.querySelectorAll('a[href]'))
+            .slice(0, 5)
+            .map(a => ({ text: a.textContent.trim().slice(0, 40), href: a.href }))
+        }));
+        console.log('📄 Страница:', pageInfo.title);
+        console.log('🔗 Первые ссылки:', JSON.stringify(pageInfo.links));
+
+        // Кликаем первый результат — селекторы для nc.lordfilm133.ru
+        const selectors = [
+          '.th-item a',
+          '.th-item',
+          '.short-item .th a',
+          '.short-item a',
+          '.movie-item a',
+          'article a',
+          '.item a',
+          'h2 a',
+          '.th a'
+        ];
         let clicked = false;
         for (const sel of selectors) {
           try {
             const el = page.locator(sel).first();
             if (await el.isVisible({ timeout: 2000 })) {
-              await el.click();
-              clicked = true;
-              console.log(`✅ Клик: ${sel}`);
-              break;
+              const href = await el.getAttribute('href');
+              if (href && href !== '#') {
+                await el.click();
+                clicked = true;
+                console.log(`✅ Клик: ${sel} → ${href}`);
+                break;
+              }
             }
           } catch {}
         }
