@@ -21,20 +21,13 @@ function isPlayer(url) {
 }
 
 async function findIframe(name, year) {
-  // Точно как в C# боте
   const query = year ? `${name} ${year}` : name;
-  console.log(`\n🔍 Ищу: "${query}"`);
+  const log = []; // Все шаги пишем сюда — вернём в ответе
+  log.push(`🔍 Запрос: "${query}"`);
 
   const browser = await chromium.launch({
     headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--single-process',
-      '--disable-web-security',
-    ]
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process', '--disable-web-security']
   });
 
   const context = await browser.newContext({
@@ -49,70 +42,89 @@ async function findIframe(name, year) {
     const url = req.url();
     if (!capturedUrl && isPlayer(url)) {
       capturedUrl = url;
-      console.log('🎯 Перехвачен через сеть:', url);
+      log.push(`🎯 Перехвачен через сеть: ${url}`);
     }
   });
 
   try {
-    // Шаг 1: открываем главную (как C#: GotoAsync("https://nc.lordfilm133.ru/"))
-    console.log('🌐 Открываю nc.lordfilm133.ru...');
-    await page.goto('https://nc.lordfilm133.ru/', {
-      waitUntil: 'domcontentloaded',
-      timeout: 25000
-    });
+    // Шаг 1
+    log.push('📡 Шаг 1: открываю nc.lordfilm133.ru...');
+    await page.goto('https://nc.lordfilm133.ru/', { waitUntil: 'domcontentloaded', timeout: 25000 });
+    log.push(`✅ Страница открыта: ${await page.title()}`);
 
-    // Шаг 2: ждём поле поиска (как C#: WaitForSelectorAsync("#story"))
+    // Шаг 2
+    log.push('📡 Шаг 2: ищу поле #story...');
     await page.waitForSelector('#story', { timeout: 10000 });
-    console.log('✅ Поле поиска #story найдено');
+    log.push('✅ Поле #story найдено');
 
-    // Шаг 3: вводим текст и Enter (как C#: FillAsync + PressAsync)
+    // Шаг 3
+    log.push(`📡 Шаг 3: ввожу "${query}" и нажимаю Enter...`);
     await page.fill('#story', query);
     await page.press('#story', 'Enter');
-    console.log(`✅ Ввёл: "${query}"`);
+    log.push('✅ Enter нажат');
 
-    // Шаг 4: ждём результаты (как C#: WaitForSelectorAsync(".th-item"))
+    // Шаг 4
+    log.push('📡 Шаг 4: жду результаты .th-item...');
     await page.waitForSelector('.th-item', { timeout: 10000 });
-    console.log('✅ .th-item найден');
+    const count = await page.locator('.th-item').count();
+    log.push(`✅ Найдено результатов: ${count}`);
 
-    // Шаг 5: кликаем первый (как C#: Locator(".th-item").First.ClickAsync())
+    // Шаг 5
+    log.push('📡 Шаг 5: кликаю на первый результат...');
+    const firstTitle = await page.locator('.th-item').first().textContent().catch(() => '?');
+    log.push(`   Первый результат: "${firstTitle.trim().slice(0, 60)}"`);
     await page.locator('.th-item').first().click();
-    console.log('✅ Клик на первый результат');
+    log.push(`✅ Клик выполнен, текущий URL: ${page.url()}`);
 
-    // Шаг 6: ждём iframe (как C#: WaitForSelectorAsync("iframe"))
+    // Шаг 6
+    log.push('📡 Шаг 6: жду iframe на странице фильма...');
     await page.waitForSelector('iframe', { timeout: 15000 });
 
-    // Шаг 7: берём src (как C#: GetAttributeAsync("iframe", "src"))
-    const src = await page.getAttribute('iframe', 'src');
-    console.log('📺 iframe src:', src);
+    // Шаг 7
+    log.push('📡 Шаг 7: читаю src из iframe...');
+    const allFrames = await page.evaluate(() => {
+      return Array.from(document.querySelectorAll('iframe')).map(f => ({
+        src: f.src || f.getAttribute('src') || '',
+        id: f.id,
+        className: f.className
+      }));
+    });
+    log.push(`   Всего iframe на странице: ${allFrames.length}`);
+    allFrames.forEach((f, i) => log.push(`   iframe[${i}]: src="${f.src}" id="${f.id}"`));
 
-    if (src && src !== 'about:blank' && src !== '') {
-      capturedUrl = src.startsWith('http') ? src : 'https:' + src;
+    // Берём первый непустой
+    for (const f of allFrames) {
+      if (f.src && f.src !== 'about:blank' && f.src !== '') {
+        capturedUrl = f.src.startsWith('http') ? f.src : 'https:' + f.src;
+        log.push(`✅ Выбран iframe: ${capturedUrl}`);
+        break;
+      }
     }
 
-    // Если пустой — ищем среди всех iframe
+    // Ждём ещё если не нашли
     if (!capturedUrl) {
+      log.push('⏳ iframe пустые, жду 3 сек...');
       await page.waitForTimeout(3000);
-      capturedUrl = await page.evaluate((domains) => {
-        for (const f of document.querySelectorAll('iframe')) {
-          const s = f.src || f.getAttribute('src') || '';
-          if (s && s !== 'about:blank') {
-            if (domains.some(d => s.includes(d)) || s.includes('embed') || s.includes('player')) {
-              return s.startsWith('//') ? 'https:' + s : s;
-            }
-          }
+      const frames2 = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('iframe')).map(f => f.src || f.getAttribute('src') || '')
+      );
+      log.push(`   iframe после ожидания: ${JSON.stringify(frames2)}`);
+      for (const s of frames2) {
+        if (s && s !== 'about:blank') {
+          capturedUrl = s.startsWith('http') ? s : 'https:' + s;
+          break;
         }
-        return null;
-      }, PLAYER_DOMAINS);
+      }
     }
 
   } catch (e) {
-    console.log('⚠️ Ошибка:', e.message.split('\n')[0]);
+    log.push(`❌ ОШИБКА: ${e.message.split('\n')[0]}`);
   } finally {
     await browser.close();
   }
 
-  console.log(capturedUrl ? `✅ Результат: ${capturedUrl}` : '❌ Не найдено');
-  return capturedUrl || null;
+  log.push(capturedUrl ? `✅ ИТОГ: ${capturedUrl}` : '❌ ИТОГ: плеер не найден');
+  return { url: capturedUrl || null, log };
 }
 
 // Routes
@@ -125,10 +137,13 @@ app.get('/iframe', async (req, res) => {
   const year = (req.query.year || '').trim();
   if (!name) return res.status(400).json({ error: 'name обязателен' });
 
+  console.log(`\n📥 name="${name}" year="${year}"`);
   try {
-    const url = await findIframe(name, year);
-    if (url) return res.json({ iframeUrl: url });
-    return res.status(404).json({ error: 'Плеер не найден', iframeUrl: null });
+    const { url, log } = await findIframe(name, year);
+    log.forEach(l => console.log(l));
+
+    if (url) return res.json({ iframeUrl: url, log });
+    return res.status(404).json({ error: 'Плеер не найден', iframeUrl: null, log });
   } catch (e) {
     console.error('💥', e.message);
     return res.status(500).json({ error: e.message });
