@@ -9,12 +9,6 @@ app.use((req, res, next) => {
   next();
 });
 
-const MIRRORS = [
-  'https://nc.lordfilm133.ru',
-  'https://hd.lordfilm-tre.ru',
-  'https://lordfilm.rs',
-];
-
 const PLAYER_DOMAINS = [
   'variyt.ws', 'kodik', 'alloha', 'videoframe',
   'sibnet', 'collaps', 'cdnmovies', 'bazon', 'hdvb',
@@ -27,8 +21,9 @@ function isPlayer(url) {
 }
 
 async function findIframe(name, year) {
+  // Точно как в C# боте
   const query = year ? `${name} ${year}` : name;
-  console.log(`🔍 Ищу: "${query}"`);
+  console.log(`\n🔍 Ищу: "${query}"`);
 
   const browser = await chromium.launch({
     headless: true,
@@ -50,137 +45,86 @@ async function findIframe(name, year) {
   const page = await context.newPage();
   let capturedUrl = null;
 
-  // Перехватываем сетевые запросы
   page.on('request', req => {
     const url = req.url();
     if (!capturedUrl && isPlayer(url)) {
       capturedUrl = url;
-      console.log('🎯 Сеть:', url);
+      console.log('🎯 Перехвачен через сеть:', url);
     }
   });
 
   try {
-    for (const mirror of MIRRORS) {
-      if (capturedUrl) break;
-      console.log(`🌐 ${mirror}`);
+    // Шаг 1: открываем главную (как C#: GotoAsync("https://nc.lordfilm133.ru/"))
+    console.log('🌐 Открываю nc.lordfilm133.ru...');
+    await page.goto('https://nc.lordfilm133.ru/', {
+      waitUntil: 'domcontentloaded',
+      timeout: 25000
+    });
 
-      try {
-        await page.goto(
-          `${mirror}/?do=search&subaction=search&story=${encodeURIComponent(query)}`,
-          { waitUntil: 'domcontentloaded', timeout: 20000 }
-        );
-        await page.waitForTimeout(1500);
+    // Шаг 2: ждём поле поиска (как C#: WaitForSelectorAsync("#story"))
+    await page.waitForSelector('#story', { timeout: 10000 });
+    console.log('✅ Поле поиска #story найдено');
 
-        // Логируем что нашли на странице поиска (для отладки)
-        const pageInfo = await page.evaluate(() => ({
-          title: document.title,
-          links: Array.from(document.querySelectorAll('a[href]'))
-            .slice(0, 5)
-            .map(a => ({ text: a.textContent.trim().slice(0, 40), href: a.href }))
-        }));
-        console.log('📄 Страница:', pageInfo.title);
-        console.log('🔗 Первые ссылки:', JSON.stringify(pageInfo.links));
+    // Шаг 3: вводим текст и Enter (как C#: FillAsync + PressAsync)
+    await page.fill('#story', query);
+    await page.press('#story', 'Enter');
+    console.log(`✅ Ввёл: "${query}"`);
 
-        // Кликаем первый результат — селекторы для nc.lordfilm133.ru
-        const selectors = [
-          '.th-item a',
-          '.th-item',
-          '.short-item .th a',
-          '.short-item a',
-          '.movie-item a',
-          'article a',
-          '.item a',
-          'h2 a',
-          '.th a'
-        ];
-        let clicked = false;
-        for (const sel of selectors) {
-          try {
-            const el = page.locator(sel).first();
-            if (await el.isVisible({ timeout: 2000 })) {
-              const href = await el.getAttribute('href');
-              if (href && href !== '#') {
-                await el.click();
-                clicked = true;
-                console.log(`✅ Клик: ${sel} → ${href}`);
-                break;
-              }
-            }
-          } catch {}
-        }
-        if (!clicked) { console.log('⚠️ Нет результатов'); continue; }
+    // Шаг 4: ждём результаты (как C#: WaitForSelectorAsync(".th-item"))
+    await page.waitForSelector('.th-item', { timeout: 10000 });
+    console.log('✅ .th-item найден');
 
-        await page.waitForLoadState('domcontentloaded').catch(() => {});
-        await page.waitForTimeout(3000);
+    // Шаг 5: кликаем первый (как C#: Locator(".th-item").First.ClickAsync())
+    await page.locator('.th-item').first().click();
+    console.log('✅ Клик на первый результат');
 
-        // Ищем iframe в DOM
-        if (!capturedUrl) {
-          capturedUrl = await page.evaluate((domains) => {
-            for (const f of document.querySelectorAll('iframe')) {
-              const src = f.src || f.getAttribute('src') || '';
-              if (src && src !== 'about:blank' && domains.some(d => src.includes(d))) return src;
-            }
-            // Ищем в тексте скриптов
-            for (const s of document.querySelectorAll('script')) {
-              const t = s.textContent || '';
-              for (const d of domains) {
-                const i = t.indexOf(d);
-                if (i > -1) {
-                  const start = t.lastIndexOf('"', i);
-                  const end = t.indexOf('"', i);
-                  if (start > -1 && end > -1) {
-                    const u = t.slice(start + 1, end);
-                    if (u.startsWith('http') || u.startsWith('//')) {
-                      return u.startsWith('//') ? 'https:' + u : u;
-                    }
-                  }
-                }
-              }
-            }
-            return null;
-          }, PLAYER_DOMAINS);
+    // Шаг 6: ждём iframe (как C#: WaitForSelectorAsync("iframe"))
+    await page.waitForSelector('iframe', { timeout: 15000 });
 
-          if (capturedUrl) console.log('✅ DOM:', capturedUrl);
-        }
+    // Шаг 7: берём src (как C#: GetAttributeAsync("iframe", "src"))
+    const src = await page.getAttribute('iframe', 'src');
+    console.log('📺 iframe src:', src);
 
-        // Ещё подождём
-        if (!capturedUrl) {
-          await page.waitForTimeout(4000);
-          capturedUrl = await page.evaluate((domains) => {
-            for (const f of document.querySelectorAll('iframe')) {
-              const src = f.src || f.getAttribute('src') || '';
-              if (src && src !== 'about:blank' && domains.some(d => src.includes(d))) return src;
-            }
-            return null;
-          }, PLAYER_DOMAINS);
-        }
-
-        if (capturedUrl) break;
-
-      } catch (e) {
-        console.log('⚠️', e.message.split('\n')[0]);
-      }
+    if (src && src !== 'about:blank' && src !== '') {
+      capturedUrl = src.startsWith('http') ? src : 'https:' + src;
     }
+
+    // Если пустой — ищем среди всех iframe
+    if (!capturedUrl) {
+      await page.waitForTimeout(3000);
+      capturedUrl = await page.evaluate((domains) => {
+        for (const f of document.querySelectorAll('iframe')) {
+          const s = f.src || f.getAttribute('src') || '';
+          if (s && s !== 'about:blank') {
+            if (domains.some(d => s.includes(d)) || s.includes('embed') || s.includes('player')) {
+              return s.startsWith('//') ? 'https:' + s : s;
+            }
+          }
+        }
+        return null;
+      }, PLAYER_DOMAINS);
+    }
+
+  } catch (e) {
+    console.log('⚠️ Ошибка:', e.message.split('\n')[0]);
   } finally {
     await browser.close();
   }
 
+  console.log(capturedUrl ? `✅ Результат: ${capturedUrl}` : '❌ Не найдено');
   return capturedUrl || null;
 }
 
-// ─── Routes ─────────────────────────────────────────────────────────────────
-
+// Routes
 app.get('/', (req, res) => {
-  res.json({ ok: true, service: 'KinoFilm iframe finder', usage: '/iframe?name=Начало&year=2010' });
+  res.json({ ok: true, usage: '/iframe?name=Аватар&year=2009' });
 });
 
-// GET /iframe?name=Начало&year=2010
 app.get('/iframe', async (req, res) => {
   const name = (req.query.name || '').trim();
   const year = (req.query.year || '').trim();
-  if (!name) return res.status(400).json({ error: 'Параметр name обязателен' });
+  if (!name) return res.status(400).json({ error: 'name обязателен' });
 
-  console.log(`\n📥 name="${name}" year="${year}"`);
   try {
     const url = await findIframe(name, year);
     if (url) return res.json({ iframeUrl: url });
